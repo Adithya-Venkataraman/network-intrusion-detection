@@ -1,0 +1,22 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local data/cache artifacts
+data_cache/
+outputs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local temp copies
+NID_Project_Updated_Copy/
