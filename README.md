@@ -1,11 +1,17 @@
-﻿# Network Intrusion Detection using Dimensionality Reduction
+﻿# Network Intrusion Detection with Multiple Dimensionality Reduction Techniques
 
-This project builds a Network Intrusion Detection (NID) pipeline and compares:
+This project builds a full NID pipeline and benchmarks these techniques in one app:
 
-- Baseline (No DR): `LogisticRegression`, `SVM-RBF`, `KNN`, `RandomForest`
-- Reduced (PCA): same model set on PCA-transformed features
+- Correlation-based Feature Selection
+- PCA
+- LDA
+- SVD
+- Filter-based SelectKBest
+- Wrapper-based RFE
+- Sequential Floating Forward Selection (SFFS)
+- Sequential Floating Backward Selection (SFBS)
 
-Dataset used by default: `KDDCup99` (`subset=SA`, `percent10=True`) from scikit-learn.
+Each technique is compared across models (`LogisticRegression`, `SVM-RBF`, `KNN`, `RandomForest`) and visualized in Streamlit.
 
 ## 1) Setup
 
@@ -15,79 +21,71 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 2) Run Experiment
+## 2) Run Full Experiment
 
 ```powershell
-python src/nid_project.py --max-samples 5000 --test-size 0.2 --random-state 42 --data-home data_cache
+python src/nid_project.py --max-samples 5000 --test-size 0.2 --random-state 42 --data-home data_cache --selector-k 20
 ```
 
-## 3) Generated Outputs
-
-All artifacts are saved in `outputs/`:
-
-- `metrics_comparison.csv`: model-wise Accuracy, Precision, Recall, F1, ROC-AUC, training/prediction time
-- `experiment_meta.json`: feature counts, PCA components retained, explained variance
-- `pca_explained_variance.png`: cumulative explained variance curve
-- `confusion_matrix_baseline.png`: best model confusion matrix in No-DR phase
-- `confusion_matrix_pca.png`: best model confusion matrix in PCA phase
-- `nid_inference_bundle.joblib`: saved preprocessors + trained models for prediction
-- `nid_input_template.csv`: CSV template for inference input
-
-## 4) Streamlit Frontend
-
-Run dashboard:
+## 3) Launch Web App
 
 ```powershell
 python -m streamlit run streamlit_app.py
 ```
 
-Features in UI:
+## 4) What You Get (Outputs)
 
-- Run new experiments from sidebar controls
-- Compare all models across No-DR and PCA phases
-- View confusion matrices, PCA variance plot, and before/after DR previews
-- Inspect raw/preprocessed/PCA dataset samples and download CSV files
-- Upload new CSV rows and predict `normal` vs `intrusion`
+Saved in `outputs/`:
 
-## 5) Intrusion Prediction on New Input
+- `metrics_comparison.csv` (full model performance table)
+- `technique_summary.csv` (best per technique)
+- `model_performance_heatmap.png`
+- `filter_methods_accuracy_comparison.png`
+- `pca_2d_projection.png`
+- `correlation_heatmap.png`
+- `feature_distribution.png`
+- `feature_importance.png` + `feature_importance.csv`
+- `shap_waterfall.png`
+- `prediction_confidence_distribution.png`
+- `random_sample_prediction.json` (sample index loaded + confidence)
+- `confusion_matrix_baseline.png`, `confusion_matrix_pca.png`, `confusion_matrix_best_overall.png`
+- `dataset_before_dr_preview.png`, `dataset_after_dr_preview.png`
+- `nid_inference_bundle.joblib` (trained artifacts for inference)
 
-After training, use:
+## 5) Intrusion Prediction on New CSV
+
+Template file:
+
+- `outputs/nid_input_template.csv`
+
+CLI inference:
 
 ```powershell
 python src/predict_intrusion.py --input path_to_new_data.csv --mode auto
 ```
 
-Output:
+For a specific technique:
 
-- `outputs/nid_predictions.csv` with:
-  - `predicted_class` (`normal` or `intrusion`)
-  - `predicted_binary` (`0` or `1`)
-  - `intrusion_score` (higher means more attack-like)
+```powershell
+python src/predict_intrusion.py --input path_to_new_data.csv --mode per_technique --technique svd
+```
 
-Important:
+Allowed technique keys:
 
-- Input CSV must include all required feature columns.
-- Input CSV must have at least one data row (header-only file will fail).
+- `no_dr`, `corr_fs`, `pca`, `lda`, `svd`, `filter_kbest`, `wrapper_rfe`, `sffs`, `sfbs`
 
-## 6) Deploy for Others (Streamlit Cloud)
+## 6) Streamlit Sections for Report Screenshots
 
-1. Commit project files (`README.md`, `requirements.txt`, `streamlit_app.py`, `src/`, `report/`).
-2. Push repo to GitHub.
-3. Open [share.streamlit.io](https://share.streamlit.io).
-4. Create app with entrypoint file: `streamlit_app.py`.
-5. Share generated public URL.
+- Overview: final observations + random sample index loaded + prediction confidence
+- Metrics: model performance table + heatmap
+- Plots: PCA 2D, correlation, distributions, confusion matrices, feature importance, SHAP waterfall
+- Dataset: raw/preprocessed/PCA samples and downloadable files
+- Inference: upload CSV and see `normal` vs `intrusion`
 
-## 7) Notes
+## 7) Deploy for Others
 
-- Target is converted to binary:
-  - `normal.` -> 0
-  - any attack class -> 1
-- The script uses stratified train/test split.
-- If runtime is high, reduce `--max-samples`.
-
-## 8) Suggested Extensions
-
-- Replace PCA with Autoencoder latent features
-- Add multi-class attack type classification
-- Evaluate other models (XGBoost, LightGBM, SVM)
-- Try NSL-KDD or UNSW-NB15 for a more modern dataset
+1. Push repo to GitHub
+2. Open [share.streamlit.io](https://share.streamlit.io)
+3. Select repo + branch
+4. Entrypoint: `streamlit_app.py`
+5. Deploy and share app URL
