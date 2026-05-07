@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import json
 import time
 from pathlib import Path
@@ -53,6 +53,8 @@ TECHNIQUE_NAMES = {
     "svd": "SVD",
     "filter_kbest": "Filter (SelectKBest)",
     "wrapper_rfe": "Wrapper (RFE)",
+    "sfs": "SFS",
+    "sbs": "SBS",
     "sffs": "SFFS",
     "sfbs": "SFBS",
 }
@@ -386,6 +388,48 @@ def build_technique_datasets(
         "feature_names": [n for n, keep in zip(preprocessed_feature_names, rfe_mask) if keep],
     }
 
+    sfs = MlxtendSFS(
+        LogisticRegression(max_iter=1000, random_state=random_state),
+        k_features=selector_k,
+        forward=True,
+        floating=False,
+        scoring="f1",
+        cv=3,
+        n_jobs=1,
+    )
+    sfs.fit(x_train_scaled, y_train)
+    x_train_sfs = sfs.transform(x_train_scaled)
+    x_test_sfs = sfs.transform(x_test_scaled)
+    sfs_idx = list(sfs.k_feature_idx_)
+    techniques["sfs"] = {
+        "kind": "selector",
+        "selector": sfs,
+        "x_train": x_train_sfs,
+        "x_test": x_test_sfs,
+        "feature_names": [preprocessed_feature_names[i] for i in sfs_idx],
+    }
+
+    sbs = MlxtendSFS(
+        LogisticRegression(max_iter=1000, random_state=random_state),
+        k_features=selector_k,
+        forward=False,
+        floating=False,
+        scoring="f1",
+        cv=3,
+        n_jobs=1,
+    )
+    sbs.fit(x_train_scaled, y_train)
+    x_train_sbs = sbs.transform(x_train_scaled)
+    x_test_sbs = sbs.transform(x_test_scaled)
+    sbs_idx = list(sbs.k_feature_idx_)
+    techniques["sbs"] = {
+        "kind": "selector",
+        "selector": sbs,
+        "x_train": x_train_sbs,
+        "x_test": x_test_sbs,
+        "feature_names": [preprocessed_feature_names[i] for i in sbs_idx],
+    }
+
     sffs = MlxtendSFS(
         LogisticRegression(max_iter=1000, random_state=random_state),
         k_features=selector_k,
@@ -480,7 +524,7 @@ def save_shap_waterfall(
     feature_names: list[str],
     output_dir: Path,
     random_state: int,
-) -> tuple[int, float, float]:
+) -> tuple[int, float, float, int]:
     x_df = pd.DataFrame(x_test_transformed, columns=feature_names)
     rng = np.random.default_rng(random_state)
     sample_idx = int(rng.integers(0, len(x_df)))
