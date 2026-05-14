@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 import subprocess
 import time
+import sys
 
 # Page Configuration
 st.set_page_config(
@@ -117,7 +118,7 @@ if st.sidebar.button("Run Experiment"):
         start_time = time.time()
         try:
             cmd = [
-                "python", "src/nid_project.py", 
+                sys.executable, "src/nid_project.py", 
                 "--max-samples", str(max_samples),
                 "--test-size", str(test_size),
                 "--random-state", str(random_state),
