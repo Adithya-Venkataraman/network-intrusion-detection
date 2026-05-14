@@ -15,8 +15,9 @@ outputs/
 # OS/editor
 .DS_Store
 Thumbs.db
-.vscode/
 .idea/
 
 # Local temp copies
 NID_Project_Updated_Copy/
+config.bat
+node_modules
