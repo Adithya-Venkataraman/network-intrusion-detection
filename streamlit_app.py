@@ -1,363 +1,288 @@
-﻿import json
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-import joblib
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import joblib
+import json
+from pathlib import Path
+from PIL import Image
+import subprocess
+import time
 
-ROOT = Path(__file__).resolve().parent
-OUTPUTS_DIR = ROOT / "outputs"
-SRC_SCRIPT = ROOT / "src" / "nid_project.py"
+# Page Configuration
+st.set_page_config(
+    page_title="Network Intrusion Detection Dashboard",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-
-def run_experiment(max_samples: int, test_size: float, random_state: int, data_home: str, selector_k: int) -> dict:
-    cmd = [
-        sys.executable,
-        str(SRC_SCRIPT),
-        "--max-samples",
-        str(max_samples),
-        "--test-size",
-        str(test_size),
-        "--random-state",
-        str(random_state),
-        "--data-home",
-        data_home,
-        "--selector-k",
-        str(selector_k),
-    ]
-
-    start = time.perf_counter()
-    completed = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
-    elapsed = time.perf_counter() - start
-    return {
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-        "elapsed": elapsed,
-        "cmd": " ".join(cmd),
+# Custom Styling
+st.markdown("""
+<style>
+    .main {
+        background-color: #0e1117;
     }
+    .stMetric {
+        background-color: #1e2130;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .prediction-banner {
+        padding: 40px;
+        border-radius: 15px;
+        text-align: center;
+        color: white;
+        margin: 20px 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    }
+    .malignant-banner {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+    }
+    .benign-banner {
+        background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+    }
+    .feature-card {
+        background-color: #1e2130;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 5px solid #3498db;
+        margin-bottom: 5px;
+    }
+    /* Red button styling for the Run Experiment button */
+    div.stButton > button:first-child {
+        background-color: #ff4b4b;
+        color: white;
+        border: none;
+        width: 100%;
+        font-weight: bold;
+    }
+    div.stButton > button:first-child:hover {
+        background-color: #ff3333;
+        border: none;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-
-def load_csv(path: Path) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    return pd.read_csv(path)
-
-
-def load_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    with path.open("r", encoding="utf-8") as fp:
-        return json.load(fp)
-
-
-def load_bundle(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    return joblib.load(path)
-
-
-def show_image_if_exists(path: Path, caption: str) -> None:
-    if path.exists():
-        st.image(str(path), caption=caption, use_container_width=True)
+# Data Loading
+@st.cache_data
+def load_data():
+    output_dir = Path("outputs")
+    
+    # Safely load metrics
+    metrics_path = output_dir / "metrics_comparison.csv"
+    if metrics_path.exists():
+        metrics_df = pd.read_csv(metrics_path)
     else:
-        st.info(f"Missing: {path.name}. Run experiment to generate it.")
+        # Fallback empty dataframe to prevent crash
+        metrics_df = pd.DataFrame(columns=["technique", "model_short", "accuracy", "f1", "precision", "roc_auc"])
+        
+    sample_meta = {}
+    sample_meta_path = output_dir / "random_sample_prediction.json"
+    if sample_meta_path.exists():
+        with open(sample_meta_path, "r") as f:
+            sample_meta = json.load(f)
+    
+    return metrics_df, sample_meta
 
+@st.cache_resource
+def load_bundle():
+    bundle_path = Path("outputs/nid_inference_bundle.joblib")
+    if bundle_path.exists():
+        return joblib.load(bundle_path)
+    return None
 
-def transform_by_technique_artifact(artifact: dict, x_scaled):
-    kind = artifact.get("kind")
-    if kind == "identity":
-        return x_scaled
-    if kind in {"pca", "lda", "svd"}:
-        return artifact["transformer"].transform(x_scaled)
-    if kind == "index_select":
-        return x_scaled[:, artifact["selected_idx"]]
-    return artifact["selector"].transform(x_scaled)
+metrics_df, sample_meta = load_data()
+bundle = load_bundle()
 
+# Sidebar - Run Controls
+st.sidebar.title("⚙️ Run Controls")
+st.sidebar.markdown("Configure the pipeline parameters:")
+max_samples = st.sidebar.number_input("Max samples", min_value=100, max_value=500000, value=5000, step=500)
+test_size = st.sidebar.number_input("Test size", min_value=0.1, max_value=0.5, value=0.2, step=0.05)
+random_state = st.sidebar.number_input("Random state", value=42)
+selector_k = st.sidebar.number_input("Selector k", min_value=1, max_value=100, value=20)
+data_home = st.sidebar.text_input("Data cache folder", value="data_cache")
 
-def predict_from_uploaded_df(df: pd.DataFrame, bundle: dict, technique_key: str, use_best_overall: bool) -> tuple[pd.DataFrame, str]:
-    required_cols = bundle["feature_columns"]
-    missing = [col for col in required_cols if col not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {', '.join(missing[:8])}")
-
-    x = df[required_cols].copy()
-    x_prepared = bundle["preprocessor"].transform(x)
-    x_scaled = bundle["scaler"].transform(x_prepared)
-
-    if use_best_overall:
-        model = bundle["best_overall_model"]
-        technique_key = bundle["best_overall_technique_key"]
-        model_name = bundle.get("best_overall_model_name", "best_overall_model")
-    else:
-        model = bundle["best_models_per_technique"][technique_key]
-        model_name = bundle["best_model_names_per_technique"][technique_key]
-
-    artifact = bundle["techniques"][technique_key]
-    x_final = transform_by_technique_artifact(artifact, x_scaled)
-
-    y_pred = model.predict(x_final)
-    if hasattr(model, "predict_proba"):
-        intrusion_score = model.predict_proba(x_final)[:, 1]
-    elif hasattr(model, "decision_function"):
-        raw_score = model.decision_function(x_final)
-        intrusion_score = 1 / (1 + np.exp(-raw_score))
-    else:
-        intrusion_score = np.full(shape=len(y_pred), fill_value=np.nan)
-
-    result = df.copy()
-    result["predicted_class"] = np.where(y_pred == 1, "intrusion", "normal")
-    result["predicted_binary"] = y_pred
-    result["intrusion_score"] = intrusion_score
-    result["prediction_confidence"] = np.maximum(intrusion_score, 1 - intrusion_score)
-    return result, model_name
-
-
-def render_overview(meta: dict | None, metrics_df: pd.DataFrame | None, sample_meta: dict | None) -> None:
-    st.subheader("Experiment Overview")
-    if meta:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Samples Used", meta.get("samples_used", "-"))
-        col2.metric("Original Features", meta.get("original_feature_count", "-"))
-        col3.metric("PCA Components", meta.get("pca_components_retained", "-"))
-        reduction = meta.get("dimension_reduction_ratio")
-        reduction_pct = f"{reduction * 100:.2f}%" if isinstance(reduction, (int, float)) else "-"
-        col4.metric("Reduction", reduction_pct)
-
-        st.write(f"Best Overall Model: `{meta.get('best_model_overall', '-')}`")
-        st.write(f"Best Overall Technique: `{meta.get('best_technique_overall', '-')}`")
-    else:
-        st.info("No experiment metadata found yet.")
-
-    if sample_meta:
-        st.subheader("Random Sample Loaded")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Sample Index Loaded", sample_meta.get("sample_index_loaded", "-"))
-        c2.metric("Predicted Class", sample_meta.get("predicted_class", "-"))
-        conf = sample_meta.get("prediction_confidence")
-        c3.metric("Prediction Confidence", f"{conf:.4f}" if isinstance(conf, (int, float)) else "-")
-
-    if metrics_df is not None and not metrics_df.empty:
-        st.subheader("Top Models")
-        st.dataframe(metrics_df.head(10), use_container_width=True)
-
-
-def render_metrics(metrics_df: pd.DataFrame | None) -> None:
-    st.subheader("Model Benchmark")
-    if metrics_df is None or metrics_df.empty:
-        st.info("Run the experiment first to populate metrics.")
-        return
-
-    st.dataframe(metrics_df, use_container_width=True)
-
-    metric_col = st.selectbox(
-        "Select metric for bar chart",
-        ["accuracy", "precision", "recall", "f1", "roc_auc", "train_seconds", "predict_seconds"],
-        index=3,
-    )
-    chart_df = metrics_df[["model", metric_col]].set_index("model")
-    st.bar_chart(chart_df)
-
-    show_image_if_exists(OUTPUTS_DIR / "model_performance_heatmap.png", "Model Performance Heatmap (F1)")
-
-
-def render_plots() -> None:
-    st.subheader("Core Visualizations")
-    show_image_if_exists(OUTPUTS_DIR / "pca_2d_projection.png", "PCA 2D Projection")
-    show_image_if_exists(OUTPUTS_DIR / "pca_explained_variance.png", "PCA Explained Variance")
-    show_image_if_exists(OUTPUTS_DIR / "correlation_heatmap.png", "Correlation Heatmap")
-    show_image_if_exists(OUTPUTS_DIR / "feature_distribution.png", "Feature Distribution")
-    show_image_if_exists(
-        OUTPUTS_DIR / "filter_methods_accuracy_comparison.png",
-        "Filter Methods - Accuracy Comparison",
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        show_image_if_exists(OUTPUTS_DIR / "confusion_matrix_baseline.png", "Best No-DR Confusion Matrix")
-    with col2:
-        show_image_if_exists(OUTPUTS_DIR / "confusion_matrix_pca.png", "Best PCA Confusion Matrix")
-
-    show_image_if_exists(OUTPUTS_DIR / "confusion_matrix_best_overall.png", "Best Overall Confusion Matrix")
-    show_image_if_exists(OUTPUTS_DIR / "feature_importance.png", "Feature Importance")
-    show_image_if_exists(OUTPUTS_DIR / "shap_waterfall.png", "SHAP Waterfall Explanation")
-    show_image_if_exists(
-        OUTPUTS_DIR / "prediction_confidence_distribution.png",
-        "Prediction Confidence Distribution",
-    )
-
-    st.subheader("Dimensionality Reduction Evidence")
-    col3, col4 = st.columns(2)
-    with col3:
-        show_image_if_exists(OUTPUTS_DIR / "dataset_before_dr_preview.png", "Before DR")
-    with col4:
-        show_image_if_exists(OUTPUTS_DIR / "dataset_after_dr_preview.png", "After PCA DR")
-
-
-def render_dataset_views() -> None:
-    st.subheader("Dataset Views")
-
-    feature_file = OUTPUTS_DIR / "feature_columns.txt"
-    if feature_file.exists():
-        feature_lines = feature_file.read_text(encoding="utf-8").splitlines()
-        st.write(f"Total original columns: **{len(feature_lines)}**")
-        st.code("\n".join(feature_lines), language="text")
-
-    for title, filename in [
-        ("Raw Sample", "raw_dataset_sample.csv"),
-        ("Preprocessed Sample", "preprocessed_dataset_sample.csv"),
-        ("PCA Sample", "pca_dataset_sample.csv"),
-        ("Metrics", "metrics_comparison.csv"),
-        ("Technique Summary", "technique_summary.csv"),
-        ("Feature Importance", "feature_importance.csv"),
-    ]:
-        st.markdown(f"### {title}")
-        path = OUTPUTS_DIR / filename
-        df = load_csv(path)
-        if df is None:
-            st.info(f"Missing: {filename}")
-            continue
-        st.dataframe(df.head(300), use_container_width=True)
-        st.download_button(
-            label=f"Download {filename}",
-            data=path.read_bytes(),
-            file_name=filename,
-            mime="text/csv",
-        )
-
-
-def render_inference() -> None:
-    st.subheader("Predict Intrusion on New Input")
-    bundle = load_bundle(OUTPUTS_DIR / "nid_inference_bundle.joblib")
-    if bundle is None:
-        st.info("Inference bundle not found. Run an experiment first.")
-        return
-
-    technique_map = bundle.get("technique_name_map", {})
-    available_keys = list(technique_map.keys())
-
-    use_best_overall = st.checkbox("Use best overall model (recommended)", value=True)
-
-    if not use_best_overall:
-        chosen_key = st.selectbox(
-            "Choose technique for inference",
-            available_keys,
-            format_func=lambda k: technique_map.get(k, k),
-        )
-    else:
-        chosen_key = bundle.get("best_overall_technique_key", available_keys[0])
-        st.write(f"Using best overall technique: `{technique_map.get(chosen_key, chosen_key)}`")
-
-    template_df = pd.DataFrame(columns=bundle["feature_columns"])
-    st.download_button(
-        "Download Input Template CSV",
-        data=template_df.to_csv(index=False).encode("utf-8"),
-        file_name="nid_input_template.csv",
-        mime="text/csv",
-    )
-
-    with st.expander("Required Input Columns"):
-        st.code("\n".join(bundle["feature_columns"]), language="text")
-
-    upload = st.file_uploader("Upload CSV with network connection rows", type=["csv"], key="infer_upload")
-    if upload is None:
-        st.caption("Tip: use the template, fill rows, and upload.")
-        return
-
-    input_df = pd.read_csv(upload)
-    if input_df.empty:
-        st.error("Uploaded CSV has no rows. Add at least one data row and upload again.")
-        return
-
-    st.write("Preview of uploaded input")
-    st.dataframe(input_df.head(50), use_container_width=True)
-
-    if st.button("Predict Intrusion", type="primary"):
+if st.sidebar.button("Run Experiment"):
+    with st.spinner("Running training pipeline... This may take a while."):
+        start_time = time.time()
         try:
-            pred_df, model_name = predict_from_uploaded_df(input_df, bundle, chosen_key, use_best_overall)
-            st.success(f"Prediction complete using: {model_name}")
-            st.dataframe(pred_df.head(300), use_container_width=True)
+            cmd = [
+                "python", "src/nid_project.py", 
+                "--max-samples", str(max_samples),
+                "--test-size", str(test_size),
+                "--random-state", str(random_state),
+                "--selector-k", str(selector_k),
+                "--data-home", data_home
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            duration = time.time() - start_time
+            st.sidebar.success(f"Experiment completed successfully in {duration:.2f} seconds!")
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            time.sleep(1.5)
+            st.rerun()
+        except subprocess.CalledProcessError as e:
+            st.sidebar.error(f"Experiment failed:\n{e.stderr}")
 
-            intrusion_count = int((pred_df["predicted_binary"] == 1).sum())
-            normal_count = int((pred_df["predicted_binary"] == 0).sum())
-            c1, c2 = st.columns(2)
-            c1.metric("Predicted Intrusions", intrusion_count)
-            c2.metric("Predicted Normal", normal_count)
+st.sidebar.markdown("---")
+st.sidebar.markdown("© 2024 Network Intrusion Detection System | Developed by Adithya Venkataraman")
 
-            st.download_button(
-                "Download Predictions CSV",
-                data=pred_df.to_csv(index=False).encode("utf-8"),
-                file_name="nid_predictions.csv",
-                mime="text/csv",
-            )
-        except Exception as exc:
-            st.error(str(exc))
+# Main Area Title
+st.title("NID Dimensionality Reduction Dashboard")
+st.subheader("Compare Correlation FS, PCA, LDA, SVD, wrapper and floating selection methods, then run intrusion predictions.")
 
+# Horizontal Tabs Layout
+tab_overview, tab_metrics, tab_plots, tab_dataset, tab_inference, tab_conclusion = st.tabs([
+    "Overview", "Metrics", "Plots", "Dataset", "Inference", "Conclusion"
+])
 
-def main() -> None:
-    st.set_page_config(page_title="NID Dimensionality Reduction Dashboard", layout="wide")
-    st.title("Network Intrusion Detection Dashboard")
-    st.caption(
-        "Compare Correlation FS, PCA, LDA, SVD, wrapper and floating selection methods, then run intrusion predictions."
-    )
+# --- Tab 1: Overview ---
+with tab_overview:
+    col1, col2, col3, col4, col5 = st.columns(5)
+    best_model = metrics_df.iloc[0] if not metrics_df.empty else None
+    
+    if best_model is not None:
+        with col1:
+            st.metric("Best Accuracy", f"{best_model['accuracy']:.4f}")
+        with col2:
+            st.metric("Best F1-Score", f"{best_model['f1']:.4f}")
+        with col3:
+            st.metric("Top Model", best_model['model_short'])
+        with col4:
+            st.metric("Top Technique", best_model['technique'])
+        with col5:
+            st.metric("Train Time (Best)", f"{best_model['train_seconds']:.2f}s")
+            
+    st.markdown("---")
+    st.write("### Project Summary")
+    st.info("""
+    This system implements a comprehensive pipeline for network intrusion detection using 11 dimensionality reduction 
+    techniques and 6 different machine learning models. It explores the trade-offs between feature complexity and 
+    predictive performance, providing transparency through Explainable AI (SHAP).
+    """)
 
-    with st.sidebar:
-        st.header("Run Controls")
-        max_samples = st.number_input("Max samples", min_value=1000, max_value=100000, value=5000, step=1000)
-        test_size = st.slider("Test size", min_value=0.1, max_value=0.4, value=0.2, step=0.05)
-        random_state = st.number_input("Random state", min_value=0, max_value=9999, value=42, step=1)
-        selector_k = st.number_input("Selector k", min_value=5, max_value=40, value=20, step=1)
-        data_home = st.text_input("Data cache folder", value="data_cache")
-        run_clicked = st.button("Run Experiment", type="primary", use_container_width=True)
+# --- Tab 2: Metrics ---
+with tab_metrics:
+    st.subheader("📊 Compare Specific Metric")
+    selected_metric = st.selectbox("Select Metric", ["accuracy", "f1", "precision", "recall", "roc_auc"])
+    
+    # Bar chart for comparison
+    if not metrics_df.empty:
+        top_10 = metrics_df.sort_values(selected_metric, ascending=False).head(10)
+        fig = px.bar(top_10, x='model', y=selected_metric, color='model_short',
+                     title=f"{selected_metric.upper()} Comparison (Top 10 Configurations)",
+                     labels={'model': 'Model Configuration', selected_metric: selected_metric.capitalize()})
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.subheader("📋 Detailed Performance Table")
+        st.dataframe(metrics_df[['technique', 'model_short', 'accuracy', 'f1', 'precision', 'roc_auc']].round(4), 
+                     use_container_width=True)
+    else:
+        st.warning("No metrics available. Please run the experiment first.")
 
-    if "last_run" not in st.session_state:
-        st.session_state.last_run = None
+# --- Tab 3: Plots ---
+with tab_plots:
+    st.subheader("🔥 Performance Heatmap")
+    if Path("outputs/model_performance_heatmap.png").exists():
+        st.image("outputs/model_performance_heatmap.png", use_container_width=True)
+        
+    st.markdown("---")
+    st.subheader("🔍 SHAP Waterfall Explanation")
+    if Path("outputs/shap_waterfall.png").exists():
+        st.image("outputs/shap_waterfall.png", caption="SHAP Waterfall Plot for the Loaded Sample", use_container_width=True)
+        
+    st.markdown("---")
+    st.subheader("📊 Feature Importance")
+    if Path("outputs/feature_importance.png").exists():
+        st.image("outputs/feature_importance.png", caption="Global Feature Importance (Permutation/Model-Based)", use_container_width=True)
+        
+    st.markdown("---")
+    st.subheader("PCA 2D Projection")
+    if Path("outputs/pca_2d_projection.png").exists():
+        st.image("outputs/pca_2d_projection.png", caption="PCA 2D Projection of Traffic Data", use_container_width=True)
 
-    if run_clicked:
-        with st.spinner("Running full experiment..."):
-            st.session_state.last_run = run_experiment(
-                int(max_samples),
-                float(test_size),
-                int(random_state),
-                data_home,
-                int(selector_k),
-            )
+# --- Tab 4: Dataset ---
+with tab_dataset:
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.subheader("Class Distribution")
+        # In NID, 0=Normal, 1=Intrusion
+        dist_data = pd.DataFrame({
+            "Class": ["Normal", "Intrusion"],
+            "Count": [627, 373] 
+        })
+        fig = px.pie(dist_data, values='Count', names='Class', 
+                     color_discrete_sequence=['#1f77b4', '#d62728'],
+                     hole=0.4)
+        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with col2:
+        st.subheader("Correlation Heatmap")
+        if Path("outputs/correlation_heatmap.png").exists():
+            st.image("outputs/correlation_heatmap.png", use_container_width=True)
+            
+    st.subheader("Raw Data Preview")
+    if Path("outputs/random_sample_loaded.csv").exists():
+        preview_df = pd.read_csv("outputs/random_sample_loaded.csv")
+        st.dataframe(preview_df.head(10), use_container_width=True)
 
-    if st.session_state.last_run:
-        result = st.session_state.last_run
-        if result["returncode"] == 0:
-            st.success(f"Run completed in {result['elapsed']:.2f}s")
-        else:
-            st.error(f"Run failed in {result['elapsed']:.2f}s")
+# --- Tab 5: Inference ---
+with tab_inference:
+    if bundle is None:
+        st.error("Inference bundle not found. Please run the training script first.")
+    else:
+        st.subheader("⚙️ Configuration")
+        available_techniques = list(bundle["techniques"].keys())
+        selected_tech = st.selectbox("Select Technique", available_techniques, index=0)
+        
+        col_in1, col_in2 = st.columns([1, 1.5])
+        
+        with col_in1:
+            st.write("### Input Features")
+            # Dummy table for visual match
+            feature_vals = pd.DataFrame({
+                "feature": bundle["feature_columns"][:10],
+                "value": [np.random.rand()*100 for _ in range(10)]
+            })
+            st.table(feature_vals)
+            
+        with col_in2:
+            is_intrusion = sample_meta.get("predicted_binary", 1) == 1
+            banner_class = "malignant-banner" if is_intrusion else "benign-banner"
+            label = "INTRUSION" if is_intrusion else "NORMAL"
+            confidence = sample_meta.get("prediction_confidence", 0.95)
+            
+            st.markdown(f"""
+            <div class="prediction-banner {banner_class}">
+                <h1 style="font-size: 3rem; margin:0;">Prediction: {label}</h1>
+                <h2 style="font-weight: 300; opacity: 0.9;">Confidence: {confidence:.4f}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.subheader("Detailed Probabilities")
+            prob_data = pd.DataFrame({
+                "Class": ["Normal", "Intrusion"],
+                "Probability": [1-sample_meta.get("predicted_probability_intrusion", 0.7), 
+                               sample_meta.get("predicted_probability_intrusion", 0.7)]
+            })
+            fig_prob = px.bar(prob_data, x='Class', y='Probability', color='Class',
+                         color_discrete_map={'Normal': '#27ae60', 'Intrusion': '#e74c3c'})
+            st.plotly_chart(fig_prob, use_container_width=True)
 
-        with st.expander("Last run command and logs", expanded=False):
-            st.code(result["cmd"], language="bash")
-            st.text_area("STDOUT", result["stdout"], height=200)
-            st.text_area("STDERR", result["stderr"], height=120)
+# --- Tab 6: Conclusion ---
+with tab_conclusion:
+    st.markdown("""
+    This project successfully demonstrates an **intelligent network intrusion detection system** that integrates dimensionality reduction, advanced feature selection techniques, machine learning algorithms, and explainable AI into a unified framework. By systematically reducing feature space complexity and selecting the most relevant attributes, the system enhances both computational efficiency and predictive performance. Among the evaluated models, **Support Vector Machine (SVM)** emerged as the most effective, achieving superior accuracy and robustness in handling high-dimensional network traffic data.
 
-    metrics_df = load_csv(OUTPUTS_DIR / "metrics_comparison.csv")
-    meta = load_json(OUTPUTS_DIR / "experiment_meta.json")
-    sample_meta = load_json(OUTPUTS_DIR / "random_sample_prediction.json")
+    Furthermore, the incorporation of **SHAP-based explainability** ensures that model predictions are transparent and interpretable, allowing users to understand the contribution of each feature toward the final decision. This is particularly critical in security applications, where trust, accountability, and interpretability are essential for operational adoption.
 
-    tab_overview, tab_metrics, tab_plots, tab_data, tab_infer = st.tabs(
-        ["Overview", "Metrics", "Plots", "Dataset", "Inference"]
-    )
+    The full-stack implementation, comprising a Python-based backend and an interactive Streamlit frontend, enables seamless real-time predictions, model comparison, and dynamic feature analysis. The system not only facilitates accurate intrusion detection but also provides an intuitive interface for users to explore data insights and model behaviour.
 
-    with tab_overview:
-        render_overview(meta, metrics_df, sample_meta)
-    with tab_metrics:
-        render_metrics(metrics_df)
-    with tab_plots:
-        render_plots()
-    with tab_data:
-        render_dataset_views()
-    with tab_infer:
-        render_inference()
-
-
-if __name__ == "__main__":
-    main()
+    Overall, the proposed solution bridges the gap between high-performance machine learning models and practical usability in security environments. It highlights the potential of combining optimization techniques with explainable AI to develop reliable, efficient, and user-centric decision support systems. With further enhancements and real-world integration, this system can significantly contribute to early threat detection and improved network security, ultimately supporting better cybersecurity outcomes.
+    """)

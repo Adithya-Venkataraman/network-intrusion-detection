@@ -395,7 +395,7 @@ def build_technique_datasets(
         floating=False,
         scoring="f1",
         cv=3,
-        n_jobs=1,
+        n_jobs=-1,
     )
     sfs.fit(x_train_scaled, y_train)
     x_train_sfs = sfs.transform(x_train_scaled)
@@ -416,7 +416,7 @@ def build_technique_datasets(
         floating=False,
         scoring="f1",
         cv=3,
-        n_jobs=1,
+        n_jobs=-1,
     )
     sbs.fit(x_train_scaled, y_train)
     x_train_sbs = sbs.transform(x_train_scaled)
@@ -437,7 +437,7 @@ def build_technique_datasets(
         floating=True,
         scoring="f1",
         cv=3,
-        n_jobs=1,
+        n_jobs=-1,
     )
     sffs.fit(x_train_scaled, y_train)
     x_train_sffs = sffs.transform(x_train_scaled)
@@ -458,7 +458,7 @@ def build_technique_datasets(
         floating=True,
         scoring="f1",
         cv=3,
-        n_jobs=1,
+        n_jobs=-1,
     )
     sfbs.fit(x_train_scaled, y_train)
     x_train_sfbs = sfbs.transform(x_train_scaled)
@@ -498,7 +498,7 @@ def save_feature_importance(
             scoring="f1",
             n_repeats=5,
             random_state=random_state,
-            n_jobs=1,
+            n_jobs=-1,
         )
         importance = perm.importances_mean
 
@@ -676,7 +676,7 @@ def main() -> None:
         "RandomForest": RandomForestClassifier(
             n_estimators=300,
             random_state=args.random_state,
-            n_jobs=1,
+            n_jobs=-1,
             class_weight="balanced_subsample",
         ),
     }
