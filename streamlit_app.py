@@ -84,8 +84,14 @@ def load_data():
     if sample_meta_path.exists():
         with open(sample_meta_path, "r") as f:
             sample_meta = json.load(f)
+            
+    experiment_meta = {}
+    exp_meta_path = output_dir / "experiment_meta.json"
+    if exp_meta_path.exists():
+        with open(exp_meta_path, "r") as f:
+            experiment_meta = json.load(f)
     
-    return metrics_df, sample_meta
+    return metrics_df, sample_meta, experiment_meta
 
 @st.cache_resource
 def load_bundle():
@@ -94,7 +100,7 @@ def load_bundle():
         return joblib.load(bundle_path)
     return None
 
-metrics_df, sample_meta = load_data()
+metrics_df, sample_meta, experiment_meta = load_data()
 bundle = load_bundle()
 
 # Sidebar - Run Controls
@@ -164,23 +170,42 @@ with tab_overview:
     techniques and 6 different machine learning models. It explores the trade-offs between feature complexity and 
     predictive performance, providing transparency through Explainable AI (SHAP).
     """)
+    
+    if experiment_meta:
+        st.markdown("---")
+        st.write("### Recent Experiment Logs")
+        col_log1, col_log2, col_log3 = st.columns(3)
+        with col_log1:
+            st.metric("Total Samples Used", experiment_meta.get("samples_used", "N/A"))
+            st.metric("Original Feature Count", experiment_meta.get("original_feature_count", "N/A"))
+        with col_log2:
+            st.metric("Train Samples", experiment_meta.get("train_samples", "N/A"))
+            st.metric("Test Samples", experiment_meta.get("test_samples", "N/A"))
+        with col_log3:
+            st.metric("PCA Components Retained", experiment_meta.get("pca_components_retained", "N/A"))
 
 # --- Tab 2: Metrics ---
 with tab_metrics:
-    st.subheader("📊 Compare Specific Metric")
-    selected_metric = st.selectbox("Select Metric", ["accuracy", "f1", "precision", "recall", "roc_auc"])
-    
-    # Bar chart for comparison
+    st.subheader("📋 Detailed Performance Table")
     if not metrics_df.empty:
-        top_10 = metrics_df.sort_values(selected_metric, ascending=False).head(10)
-        fig = px.bar(top_10, x='model', y=selected_metric, color='model_short',
-                     title=f"{selected_metric.upper()} Comparison (Top 10 Configurations)",
-                     labels={'model': 'Model Configuration', selected_metric: selected_metric.capitalize()})
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.subheader("📋 Detailed Performance Table")
         st.dataframe(metrics_df[['technique', 'model_short', 'accuracy', 'f1', 'precision', 'roc_auc']].round(4), 
                      use_container_width=True)
+                     
+        st.markdown("---")
+        st.subheader("📊 Metric Comparisons")
+        metrics_list = ["accuracy", "f1", "precision", "recall", "roc_auc"]
+        
+        for m in metrics_list:
+            top_10 = metrics_df.sort_values(m, ascending=False).head(10)
+            fig = px.bar(top_10, x='model', y=m, color='model_short',
+                         title=f"{m.upper()} Comparison (Top 10 Configurations)",
+                         labels={'model': 'Model Configuration', m: m.capitalize()})
+            st.plotly_chart(fig, use_container_width=True)
+            
+        st.markdown("---")
+        st.subheader("Model Benchmarks")
+        if Path("outputs/filter_methods_accuracy_comparison.png").exists():
+            st.image("outputs/filter_methods_accuracy_comparison.png", use_container_width=True)
     else:
         st.warning("No metrics available. Please run the experiment first.")
 
@@ -191,19 +216,40 @@ with tab_plots:
         st.image("outputs/model_performance_heatmap.png", use_container_width=True)
         
     st.markdown("---")
+    st.subheader("📊 Feature Distribution")
+    if Path("outputs/feature_distribution.png").exists():
+        st.image("outputs/feature_distribution.png", use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("📈 Confusion Matrices")
+    col_cm1, col_cm2, col_cm3 = st.columns(3)
+    with col_cm1:
+        st.write("**Best No DR**")
+        if Path("outputs/confusion_matrix_baseline.png").exists():
+            st.image("outputs/confusion_matrix_baseline.png", use_container_width=True)
+    with col_cm2:
+        st.write("**Best PCA**")
+        if Path("outputs/confusion_matrix_pca.png").exists():
+            st.image("outputs/confusion_matrix_pca.png", use_container_width=True)
+    with col_cm3:
+        st.write("**Best Overall**")
+        if Path("outputs/confusion_matrix_best_overall.png").exists():
+            st.image("outputs/confusion_matrix_best_overall.png", use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("PCA 2D Projection")
+    if Path("outputs/pca_2d_projection.png").exists():
+        st.image("outputs/pca_2d_projection.png", caption="PCA 2D Projection of Traffic Data", use_container_width=True)
+
+    st.markdown("---")
     st.subheader("🔍 SHAP Waterfall Explanation")
     if Path("outputs/shap_waterfall.png").exists():
         st.image("outputs/shap_waterfall.png", caption="SHAP Waterfall Plot for the Loaded Sample", use_container_width=True)
         
     st.markdown("---")
-    st.subheader("📊 Feature Importance")
+    st.subheader("📊 Global Feature Importance")
     if Path("outputs/feature_importance.png").exists():
         st.image("outputs/feature_importance.png", caption="Global Feature Importance (Permutation/Model-Based)", use_container_width=True)
-        
-    st.markdown("---")
-    st.subheader("PCA 2D Projection")
-    if Path("outputs/pca_2d_projection.png").exists():
-        st.image("outputs/pca_2d_projection.png", caption="PCA 2D Projection of Traffic Data", use_container_width=True)
 
 # --- Tab 4: Dataset ---
 with tab_dataset:
@@ -253,27 +299,69 @@ with tab_inference:
             st.table(feature_vals)
             
         with col_in2:
-            is_intrusion = sample_meta.get("predicted_binary", 1) == 1
-            banner_class = "malignant-banner" if is_intrusion else "benign-banner"
-            label = "INTRUSION" if is_intrusion else "NORMAL"
-            confidence = sample_meta.get("prediction_confidence", 0.95)
-            
-            st.markdown(f"""
-            <div class="prediction-banner {banner_class}">
-                <h1 style="font-size: 3rem; margin:0;">Prediction: {label}</h1>
-                <h2 style="font-weight: 300; opacity: 0.9;">Confidence: {confidence:.4f}</h2>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.subheader("Detailed Probabilities")
-            prob_data = pd.DataFrame({
-                "Class": ["Normal", "Intrusion"],
-                "Probability": [1-sample_meta.get("predicted_probability_intrusion", 0.7), 
-                               sample_meta.get("predicted_probability_intrusion", 0.7)]
-            })
-            fig_prob = px.bar(prob_data, x='Class', y='Probability', color='Class',
-                         color_discrete_map={'Normal': '#27ae60', 'Intrusion': '#e74c3c'})
-            st.plotly_chart(fig_prob, use_container_width=True)
+            # Dynamic Inference Logic
+            try:
+                # 1. Load the raw sample
+                raw_df = pd.read_csv("outputs/random_sample_loaded.csv")
+                # Drop meta columns if they exist
+                if "true_binary" in raw_df.columns:
+                    raw_df = raw_df.drop(columns=["true_binary"])
+                if "true_label" in raw_df.columns:
+                    raw_df = raw_df.drop(columns=["true_label"])
+                
+                # 2. Preprocess
+                x_prep = bundle["preprocessor"].transform(raw_df)
+                x_scaled = bundle["scaler"].transform(x_prep)
+                
+                # 3. Apply Dimensionality Reduction Technique
+                tech_info = bundle["techniques"][selected_tech]
+                kind = tech_info.get("kind", "identity")
+                
+                if kind in ["pca", "lda", "svd"]:
+                    x_final = tech_info["transformer"].transform(x_scaled)
+                elif kind == "selector":
+                    x_final = tech_info["selector"].transform(x_scaled)
+                elif kind == "index_select":
+                    x_final = x_scaled[:, tech_info["selected_idx"]]
+                else:
+                    x_final = x_scaled
+                    
+                # 4. Predict using the specific model for this technique
+                model = bundle["best_models_per_technique"][selected_tech]
+                if hasattr(model, "predict_proba"):
+                    prob = model.predict_proba(x_final)[0, 1]
+                    confidence = max(prob, 1 - prob)
+                    is_intrusion = prob >= 0.5
+                else:
+                    dist = model.decision_function(x_final)[0]
+                    prob = 1 / (1 + np.exp(-dist)) # Sigmoid to get pseudo-probability
+                    confidence = max(prob, 1 - prob)
+                    is_intrusion = dist > 0
+                    
+                # 5. Display
+                banner_class = "malignant-banner" if is_intrusion else "benign-banner"
+                label = "INTRUSION" if is_intrusion else "NORMAL"
+                
+                st.markdown(f"""
+                <div class="prediction-banner {banner_class}">
+                    <h1 style="font-size: 3rem; margin:0;">Prediction: {label}</h1>
+                    <h2 style="font-weight: 300; opacity: 0.9;">Confidence: {confidence:.4f}</h2>
+                    <h4 style="font-weight: 300; opacity: 0.8;">Model: {bundle["best_model_names_per_technique"][selected_tech]}</h4>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.subheader("Detailed Probabilities")
+                prob_data = pd.DataFrame({
+                    "Class": ["Normal", "Intrusion"],
+                    "Probability": [1 - prob, prob]
+                })
+                fig_prob = px.bar(prob_data, x='Class', y='Probability', color='Class',
+                             color_discrete_map={'Normal': '#27ae60', 'Intrusion': '#e74c3c'})
+                fig_prob.update_layout(yaxis=dict(range=[0, 1]))
+                st.plotly_chart(fig_prob, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Error during live inference: {str(e)}")
 
 # --- Tab 6: Conclusion ---
 with tab_conclusion:
